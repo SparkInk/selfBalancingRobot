@@ -46,8 +46,6 @@ void updateMotorSpeed(int speed){
     // Give better names to motors
     // instead of m1 and m2
 
-    // speed *= 9; // scale for 800 range; 800/90 deg = 8.88 ~ 9;
-
     speed += 1000;
 
 

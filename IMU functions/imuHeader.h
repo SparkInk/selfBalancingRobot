@@ -76,9 +76,10 @@
     #define IMU_PWR_TRIG            P8OUT &= ~BIT2; P8OUT |= BIT2;
     #define SEND_SA(slaveAddr)      UCB1I2CSA = slaveAddr
     #define WAIT_1ms                __delay_cycles(25000)
-    #define WAIT_100ms                __delay_cycles(2500000)
+    #define WAIT_2ms                __delay_cycles(50000)
     #define I2C_RST_ON              UCB1CTL1 |= UCSWRST;
     #define I2C_RST_OFF             UCB1CTL1 &= ~UCSWRST;
+    #define PB2                     P2OUT &= ~BIT1; P2OUT ^= BIT1;
 
     #define MST_TX_MODE             UCB1CTL1 |= UCTR     // Reset is ON; Transmitter Mode; Reset is OFF
     #define MST_RX_MODE             UCB1CTL1 &= ~UCTR   // Reset is ON; Receiver Mode; Reset is OFF

@@ -12,7 +12,7 @@
 
     // constants
 //    #define SMCLK_DIV_10 10     // SMCLK deviser by 10
-    #define SMCLK_DIV_10 60     // SMCLK deviser by 60
+    #define SMCLK_DIV_10 100     // SMCLK deviser by 100
     
     // MACROS
     #define SEND_SA(slaveAddr)   UCB1I2CSA = slaveAddr

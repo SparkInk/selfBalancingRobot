@@ -48,10 +48,6 @@ void usciB1I2CInit (unsigned int sclkDiv) {
     // Use only P4.2 (SCL) and P4.1 (SDA)
     P4SEL |= BIT2 | BIT1;
 
-    // initialise power
-    P8DIR |= BIT2;  // P8.2
-    IMU_PWR_TRIG;
-
     // Clock divider
     UCB1BR0 = sclkDiv & 0x00ff;
     UCB1BR1 = sclkDiv >> 8;

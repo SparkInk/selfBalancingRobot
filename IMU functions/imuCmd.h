@@ -21,7 +21,7 @@
     #define CMD2_IMU_NARG       0
     #define CMD3_IMU_NARG       0
     #define CMD4_IMU_NARG       0
-    #define CMD5_IMU_NARG       2
+    #define CMD5_IMU_NARG       0
     #define CMD6_IMU_NARG       1
     #define CMD7_IMU_NARG       1
 
@@ -33,11 +33,11 @@
     #define CMD2_IMU    "imuReadGyro"
     #define CMD3_IMU    "imuReadTemp"
     #define CMD4_IMU    "imuPowerOn"
-    #define CMD5_IMU    "imuSendByte"
+    #define CMD5_IMU    "systemLaunch"
     #define CMD6_IMU    "imuAccelRange"
     #define CMD7_IMU    "imuGyroRange"
-
-    // global variables
+    
+    // variables
     typedef struct IMU_CMD {
             const char* cmdName;
             int nArgs; // number of input arguments for a command
@@ -63,6 +63,19 @@
 
 
     }IMU_GYRO;
+
+    // arrow keys structure
+    typedef struct ARROWS {
+
+        volatile unsigned char up, down, left, right, bitPID;
+
+    } ARROWS;
+
+    // PID gains 
+    typedef struct PID {
+        volatile signed int Kp, Ki;
+        volatile float Kd;
+    } PID;
 
     // functions definitions
     void initCmdList(IMU_CMD* cmdList);

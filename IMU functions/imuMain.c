@@ -7,7 +7,7 @@
  *
  * Author: Iakov Umrikhin
  * Date Created: 14.03.2022 (dd:mm:yyyy)
- * Date Modified: 14.03.2022 (dd:mm:yyyy)
+ * Date Modified: 10.05.2022 (dd:mm:yyyy)
  **************************************************************************/
 
 #include <msp430.h>
@@ -17,10 +17,9 @@
 #include "imuCmd.h"
 #include "fastClock.h"
 
-int main(void)
+int main(void) {
 
-{
-	WDTCTL = WDTPW | WDTHOLD;	// stop watchdog timer
+    WDTCTL = WDTPW | WDTHOLD;   // stop watchdog timer
 
     volatile unsigned char rxString[50];  // store commands from the termial
 
@@ -30,7 +29,6 @@ int main(void)
 	IMU_CMD cmdList[MAX_IMU_CMDS];
 
 	// Initialise 25 MHz clock
-
 	fastClkInit();
 
 	// initiallise motor driver
@@ -53,8 +51,8 @@ int main(void)
 	// imuPowerOn
 	executeCmd(cmdList, 4);
 
-	// imuReadAcc
-	executeCmd(cmdList, 1);
+	// systemLaunch
+	executeCmd(cmdList, 5);
 
 	while (1) {
 

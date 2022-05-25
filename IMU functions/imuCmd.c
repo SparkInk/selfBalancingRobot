@@ -1,12 +1,12 @@
 
-                            /*************************************
-                            *  A command module for the MPU6050  *
-                            *                                    *
-                            *                                    *
-                            * Author: Iakov Umrikhin             *
-                            * Date Created: 15.03.2022           *
-                            * Date Modified: 15.03.2022          *
-                            **************************************/
+                            /************************************************
+                            *  A command module for the MPU6050             *
+                            *                                               *
+                            *                                               *
+                            * Author: Iakov (aka Iasha) Umrikhin            *
+                            * Date Created: 15.03.2022                      *
+                            * Date Modified: 17.05.2022                     *
+                            ************************************************/
 
 #include <msp430.h>
 #include <string.h>
@@ -15,29 +15,33 @@
 #include "imuCmd.h"
 #include "imuHeader.h"
 #include "motorControl.h"
+#include "quadEncDecode.h"
 
 // Global variables
-unsigned char enterConsole;
+volatile unsigned char enterConsole;
+volatile unsigned char pidChange;
+
+ARROWS arrowKey;
 
 /************************************************************************************
 * Function: initCmdList
 *
-* Description:
+* Description: initialises commands to control the system
 *
 * Arguments: cmdList - list of commands
 *
 * Return: none
 *
-* Author: Iakov Umrikhin
+* Author: Iakov (aka Iasha) Umrikhin
 * Date Created: 15.03.2022 (dd.mm.yyyy)
-* Date Modified: 15.03.2022 (dd.mm.yyyy)
+* Date Modified: 17.05.2022 (dd.mm.yyyy)
 ************************************************************************************/
 void initCmdList(IMU_CMD* cmdList) {
 //  whoAmI
     cmdList[0].cmdName = CMD0_IMU; // initialize the first command name;
     cmdList[0].nArgs = CMD0_IMU_NARG; // initialize num of arguments in first command
 
-    // repeat for all remaining valid commands
+// repeat for all remaining valid commands
 
 //  imuReadAcc
     cmdList[1].cmdName = CMD1_IMU;
@@ -55,7 +59,7 @@ void initCmdList(IMU_CMD* cmdList) {
     cmdList[4].cmdName = CMD4_IMU;
     cmdList[4].nArgs = CMD4_IMU_NARG;
 
-//  imuSendByte
+//  systemLaunch
     cmdList[5].cmdName = CMD5_IMU;
     cmdList[5].nArgs = CMD5_IMU_NARG;
 
@@ -79,7 +83,7 @@ void initCmdList(IMU_CMD* cmdList) {
 *
 * Return: the index of a command if it is valid; -1 otherwise;
 *
-* Author: Iakov Umrikhin
+* Author: Iakov (aka Iasha) Umrikhin
 * Date: 16.01.2022 (dd.mm.yyyy)
 * Modified: 17.01.2022 (dd.mm.yyyy)
 ************************************************************************************/
@@ -88,6 +92,7 @@ int parseCmd(IMU_CMD * cmdList , char * cmdLine) {
     int valid = -1;
     int counter = 0;
     char *pEnd; // to use only for strtol
+
     token = strtok(cmdLine, " ");
 
     // validating command name
@@ -134,7 +139,7 @@ int parseCmd(IMU_CMD * cmdList , char * cmdLine) {
 *
 * Return: index of a command
 *
-* Author: Iakov Umrikhin
+* Author: Iakov (aka Iasha) Umrikhin
 * Date: 16.01.2022 (dd.mm.yyyy)
 * Modified: 17.01.2022 (dd.mm.yyyy)
 ************************************************************************************/
@@ -164,9 +169,9 @@ int validateCmd(IMU_CMD* cmdList, char* cmdName) {
  *
  * Return: 0 if it is valid; -1 otherwise;
  *
- * Author: Iakov Umrikhin
+ * Author: Iakov (aka Iasha) Umrikhin
  * Date: 16.01.2022 (dd.mm.yyyy)
- * Modified: 21.03.2022 (dd.mm.yyyy)
+ * Modified: 17.05.2022 (dd.mm.yyyy)
  ************************************************************************************/
 
  int executeCmd(IMU_CMD * cmdList, int cmdIndex) {
@@ -177,21 +182,26 @@ int validateCmd(IMU_CMD* cmdList, char* cmdName) {
      volatile signed int temperature_raw;
      volatile signed int temperature_well_done;
 
-     volatile signed int phi;
-     volatile signed int gyroAngleDisp = 0;
+     volatile signed int phi;   // accelerometer's angle
+     volatile static signed int phiOffset;
+     volatile signed int theta; // gyroscope's angle
+
      volatile static char oneShot = 0;
 
-     // static variables
-     volatile static float acc_x_raw;
-     volatile static float acc_y_raw;
-     volatile static float acc_z_raw;
+     // static variables for MPU6050
+     volatile static signed int acc_x_raw;
+     volatile static signed int acc_y_raw;
+     volatile static signed int acc_z_raw;
 
-     volatile static float gyro_x_raw;
-     volatile static float gyro_y_raw;
-     volatile static float gyro_z_raw;
+     volatile static signed int gyro_x_raw;
+     volatile static signed int gyro_y_raw;
+     volatile static signed int gyro_z_raw;
 
      IMU_ACC accData;
      IMU_GYRO gyroData;
+
+     // PID gains
+     static PID pidGain;
 
      switch(cmdIndex) {
 
@@ -205,12 +215,115 @@ int validateCmd(IMU_CMD* cmdList, char* cmdName) {
          break;
 
      case 1:    // imuReadAcc
+
+         while (!enterConsole) {
+             UCA1IE |= UCRXIE;
+             IMUSendByte(MPU6050_ADDR, ACC_XOUT_H, 0, 1);
+             IMURead(6, MPU6050_ADDR, dataIn);
+
+//           store gyro_out
+             acc_x_raw = (dataIn[0] << 8) | (0xff & dataIn[1]);
+             acc_y_raw = (dataIn[2] << 8) | (0xff & dataIn[3]);
+             acc_z_raw = (dataIn[4] << 8) | (0xff & dataIn[5]);
+
+             sprintf(dispBuff, "Acc X: %d  Acc Y:  %d  Acc Z: %d  \r\n",
+                                acc_x_raw,
+                                            acc_y_raw,
+                                                         acc_z_raw);
+             usciA1UartTxString(dispBuff);
+
+         }
+         // disable interrupt
+         UCA1IE &= ~UCRXIE;
+
+//       clear the gyroscope data
+         acc_x_raw = 0;
+         acc_y_raw = 0;
+         acc_z_raw = 0;
+
+//       clear enterConsole
+         enterConsole = 0;
+         break;
+
+
+         break;
+
+     case 2:    // imuReadGyro
+
+         while (!enterConsole) {
+             UCA1IE |= UCRXIE;
+             IMUSendByte(MPU6050_ADDR, GYRO_XOUT_H, 0, 1);
+             IMURead(6, MPU6050_ADDR, dataIn);
+
+//           store gyro_out
+             gyro_x_raw = (dataIn[0] << 8) | (0xff & dataIn[1]);
+             gyro_y_raw = (dataIn[2] << 8) | (0xff & dataIn[3]);
+             gyro_z_raw = (dataIn[4] << 8) | (0xff & dataIn[5]);
+
+             sprintf(dispBuff, "Gyro X: %d  Gyro Y:  %d  Gyro Z: %d  \r\n",
+                                gyro_x_raw,
+                                            gyro_y_raw,
+                                                         gyro_z_raw);
+             usciA1UartTxString(dispBuff);
+
+         }
+         // disable interrupt
+         UCA1IE &= ~UCRXIE;
+
+//       clear the gyroscope data
+         gyro_x_raw = 0;
+         gyro_y_raw = 0;
+         gyro_z_raw = 0;
+
+//       clear enterConsole
+         enterConsole = 0;
+         break;
+
+
+     case 3:    // imuReadTemp
+
+        while (!enterConsole) {
+
+            UCA1IE |= UCRXIE;
+
+            // read temperature data
+            IMUSendByte(MPU6050_ADDR, TEMP_OUT_H, 0, 1);
+            IMURead(2, MPU6050_ADDR, dataIn);
+        }
+         break;
+
+     case 4:    // imuPowerOn
+
+         // set gyroscope range
+         IMUSendByte(MPU6050_ADDR, GYRO_CONFIG, GYRO_250, 0);
+         usciA1UartTxString("Range +/- 250 deg/s is set \n");
+         newLine();
+
+         // set accelerometer range
+         IMUSendByte(MPU6050_ADDR, ACCEL_CONFIG, ACCEL_2G, 0);
+         usciA1UartTxString("Range +/- 2g is set\n");
+         newLine();
+
+         // set the low-pass filter
+         IMUSendByte(MPU6050_ADDR, CONFIG, BW_21_ACC, 0);
+         usciA1UartTxString("Bandwidth 21 Hz is set\n");
+         newLine();
+
+         // set NORMAL power mode
+         IMUSendByte(MPU6050_ADDR, MPU_PWR_MGMT_1, NORMAL_MODE, 0);
+         usciA1UartTxString("Power On Complete\n");
+         newLine();
+
+         break;
+
+     case 5:    // systemLaunch
+
          // NOTE: when initialising this command
          //       keep the MPU orientation such that Oz points upwards;
-         while (enterConsole != '\r') {
+         while (!enterConsole && !stopBit) {
 
-             UCA1IE |= UCRXIE;  // enable the UART interrupt to stop displaying
-                                // accelerometer data
+             // enable UART interrupt
+             UCA1IE |= UCRXIE;
 
 //           use oneShot to set a range for Gyro and Accelerometer
              if (!oneShot) {
@@ -224,6 +337,9 @@ int validateCmd(IMU_CMD* cmdList, char* cmdName) {
                  acc_y_raw = (dataIn[2] << 8) | (0xff & dataIn[3]);
                  acc_z_raw = (dataIn[4] << 8) | (0xff & dataIn[5]);
 
+                 phiOffset = atan2(acc_z_raw, acc_x_raw) * 573;
+
+                 // wait to allow the I2C to finish transmission
                  WAIT_1ms;
 
                  // clear the data-storing buffer
@@ -242,67 +358,64 @@ int validateCmd(IMU_CMD* cmdList, char* cmdName) {
                  oneShot = 1;
 
              }
-             else {
-                 // delay to 1 ms
-                  WAIT_100ms;
 
-                 IMUSendByte(MPU6050_ADDR, ACC_XOUT_H, 0, 1);
-                 IMURead(6, MPU6050_ADDR, dataIn);
+             // delay to 2 ms
+             WAIT_2ms;
+
+             IMUSendByte(MPU6050_ADDR, ACC_XOUT_H, 0, 1);
+             IMURead(6, MPU6050_ADDR, dataIn);
 
 //               store acc_out_raw for the offset
-                 accData.x_well_done = (dataIn[0] << 8) | (0xff & dataIn[1]);
-                 accData.y_well_done = (dataIn[2] << 8) | (0xff & dataIn[3]);
-                 accData.z_well_done = (dataIn[4] << 8) | (0xff & dataIn[5]);
+             accData.x_well_done = (dataIn[0] << 8) | (0xff & dataIn[1]);
+             accData.y_well_done = (dataIn[2] << 8) | (0xff & dataIn[3]);
+             accData.z_well_done = (dataIn[4] << 8) | (0xff & dataIn[5]);
 
-//               offset the acc_data
-//               accData.x_well_done -= acc_x_raw;
-                 accData.y_well_done -= acc_y_raw;
-                 accData.z_well_done -= acc_z_raw;
+             // wait to allow the I2C to finish transmission
+             WAIT_1ms;
 
-//               request the gyro_data
-                 IMUSendByte(MPU6050_ADDR, GYRO_XOUT_H, 0, 1);
-                 IMURead(6, MPU6050_ADDR, dataIn);
+//           request the gyro_data
+             IMUSendByte(MPU6050_ADDR, GYRO_XOUT_H, 0, 1);
+             IMURead(6, MPU6050_ADDR, dataIn);
 
-//               store the real data (Oy)
-                 gyroData.y_well_done = (dataIn[2] << 8) | (0xff & dataIn[3]);
+//           store the real data (Oy)
+             gyroData.y_well_done = (dataIn[2] << 8) | (0xff & dataIn[3]);
 
-//               offset the gyro data (Oy)
-                 gyroData.y_well_done -= gyro_y_raw;
+//           offset the gyro data (Oy)
+             gyroData.y_well_done -= gyro_y_raw;
 
-//               convert from +- 2000 deg/s to 250 deg/s
-                 gyroData.y_well_done = mapGyro(gyroData.y_well_done);
-
-             }
-
-//          compute the angle (Oz, Ox)
-            phi = atan2(accData.z_well_done, accData.x_well_done) * 57.3;
-
-//          compute the angular displacement (Oy) due to the acceleration
-        //    gyroAngleDisp = gyroData.x_well_done * dT;
-
-//          filter phi by means of the complementary filter            
-            phi = lowPassFilter(&accData, phi, gyroData.y_well_done);
-
-//          correct the angle(Oz, Ox) for the angular displacement
-            // newPhi = 90 + phi - gyroAngleDisp;
+//           convert gyro angle from bits to deg/s
+             theta = mapGyro(gyroData.y_well_done);
 
 
+//           compute the angle (Oz, Ox); amplified by 10
+             phi = atan2(accData.z_well_done, accData.x_well_done) * 573;
+             phi -= phiOffset;
 
-//          send an angle to the motors
-            updateMotorSpeed(pidCompute(phi));
+//           compute the angular displacement (Oy) due to the acceleration
+//           filter phi by means of the complementary filter
+             phi = lowPassFilter(phi, theta);
 
- //          display the angle(Oz, Ox)
-              sprintf(dispBuff,
-                    "Angle: %d    ACC_X: %d   ACC_Y: %d  ACC_Z: %d    \r\n",
-                         phi,
-                         pidCompute(phi),
-                             gyroData.y_well_done,
-                                 accData.z_well_done);
-              usciA1UartTxString(dispBuff);
+//           correct the angle(Oz, Ox) for the angular displacement
 
-              memset(dispBuff, 0 ,30);
+//           send an angle to the motors
+             updateMotorSpeed(pidCompute(phi, &pidGain));
+
+//           display the angle(Oz, Ox)
+             sprintf(dispBuff,
+                     "Angle:   %d  PID:   %d   Gyro(deg/s): %d  \r\n",
+                     (phi / 10),
+                          pidCompute(phi, &pidGain),
+                              theta);
+             sprintf(dispBuff, "Angle:   %d \n", (phi / 10));
+             usciA1UartTxString(dispBuff);
+             newLine();
+
+             memset(dispBuff, 0 ,30);
 
          }  // while loop end
+
+         // disable interrupt
+         UCA1IE &= ~UCRXIE;
 
 //       clear the accelerometer's data and gyroscope's data
          IMU_ACC accData;
@@ -311,72 +424,13 @@ int validateCmd(IMU_CMD* cmdList, char* cmdName) {
 //       clear enterConsole
          enterConsole = 0;
 
-//       clear oneShot
-         oneShot = 0;
-
-         break;
-
-     case 2:    // imuReadGyro
-
-         while (enterConsole != '\r') {
-             UCA1IE |= UCRXIE;
-             IMUSendByte(MPU6050_ADDR, GYRO_XOUT_H, 0, 1);
-             IMURead(6, MPU6050_ADDR, dataIn);
-
-//           store gyro_out
-             gyro_x_raw = (dataIn[0] << 8) | (0xff & dataIn[1]);
-             gyro_y_raw = (dataIn[2] << 8) | (0xff & dataIn[3]);
-             gyro_z_raw = (dataIn[4] << 8) | (0xff & dataIn[5]);
-
-             sprintf(dispBuff, "Gyro X: %d  Gyro Y:  %d  Gyro Z: %d  \n",
-                                gyro_x_raw,
-                                            gyro_y_raw,
-                                                         gyro_z_raw);
+         if (stopBit) {
+             usciA1UartTxString("You idiot, you've got a NACK \r\n");
          }
 
-//       clear the gyroscope data
-         gyro_x_raw = 0;
-         gyro_y_raw = 0;
-         gyro_z_raw = 0;
-
-//       clear enterConsole
-         enterConsole = 0;
-         break;
-
-
-     case 3:    // imuReadTemp
-
-         IMUSendByte(MPU6050_ADDR, TEMP_OUT_H, 0, 1);
-         IMURead(2, MPU6050_ADDR, dataIn);
-
-         break;
-
-     case 4:    // imuPowerOn
-
-         // set gyroscope range
-         IMUSendByte(MPU6050_ADDR, GYRO_CONFIG, GYRO_250, 0);
-         usciA1UartTxString("Range +/- 250 deg/s is set \n");
-         newLine();
-
-         // set accelerometer range
-         IMUSendByte(MPU6050_ADDR, ACCEL_CONFIG, ACCEL_16G, 0);
-         usciA1UartTxString("Range +/- 16g is set\n");
-         newLine();
-
-        //  // set the low-pass filter
-        //  IMUSendByte(MPU6050_ADDR, CONFIG, BW_44_ACC, 0);
-        //  usciA1UartTxString("Bandwidth 44 Hz is set\n");
-        //  newLine();
-
-         // set NORMAL power mode
-         IMUSendByte(MPU6050_ADDR, MPU_PWR_MGMT_1, NORMAL_MODE, 0);
-         usciA1UartTxString("Power On Complete\n");
-         newLine();
-
-         break;
-
-     case 5:    // imuSendByte
-
+//       clear oneShot
+         oneShot = 0;
+         stopBit = 0;
 
          break;
 
@@ -453,13 +507,13 @@ int validateCmd(IMU_CMD* cmdList, char* cmdName) {
  /************************************************************************************
  * Function: newLine
  *
- * Description: goes to a new line
+ * Description: goes to a new line in the console
  *
  * Arguments: none
  *
  * Return: none
  *
- * Author: Iakov Umrikhin
+ * Author: Iakov (aka Iasha) Umrikhin
  * Date: 19.03.2022 (dd.mm.yyyy)
  * Modified: 19.03.2022 (dd.mm.yyyy)
  ************************************************************************************/
@@ -476,153 +530,364 @@ int validateCmd(IMU_CMD* cmdList, char* cmdName) {
   *
   * Description: 
   *
-  * Arguments: angle - a current, raw angle from the accelerometre
+  * Arguments: actualAngle - a current, raw angle from the accelerometer; deg
+  *            gyro     -   a mapped angle from the gyroscope; deg/s
   *
   * Return: angle - filtered angle
   *
-  * Author: Iakov Umrikhin
+  * Author: Iakov (aka Iasha) Umrikhin
   * Date: 22.04.2022 (dd.mm.yyyy)
-  * Modified: 22.04.2022 (dd.mm.yyyy)
+  * Modified: 07.05.2022 (dd.mm.yyyy)
   ************************************************************************************/
- signed int lowPassFilter(IMU_GYRO *angle, signed int acctualAngle, signed int gyro) {
+ signed int lowPassFilter(signed int actualAngle, signed int gyro) {
 
-    volatile float filteredAngle;
+    volatile signed int filteredAngle;
     volatile static signed int prevAngle;
-    volatile float dT = 0.001;    // time to integrate over is 10 ms
+    volatile float dT = 0.05;    // time to integrate over is 100 ms
     volatile float gyroAngle;
+    volatile float weight = 0.95;
 
-    volatile float magnitude;
-    volatile float weight;
+    // calculate the angle from the gyroscope (Oy)
+    gyroAngle = (float)gyro * dT;
 
-    // compute the magnitude of the accelerometer in terms of g
-    angle->x_well_done = constrain(angle->x_well_done, -2048, 2048);
-    angle->z_well_done = constrain(angle->z_well_done, -2048, 2048);
+    // filter the angle
+    filteredAngle = weight * (gyroAngle + prevAngle) + (1 - weight) * actualAngle;
 
-    magnitude = sqrt(pow((angle->x_well_done / (float)2048), 2)  + pow((angle->z_well_done / (float)2048), 2));
-
-    weight = 1 - 5 * fabsf(1 - magnitude);
-
-    if (weight > 1) {
-        weight = 1;
-    }
-    else if (weight < 0) {
-        weight = 0;
-    }
-    weight /= 10;
-
-    // calculate the angle from the gyroscopes
-    gyroAngle = gyro * dT;
-
-    // filter the angle;
-    
-    filteredAngle = (1 - weight) * (prevAngle + gyroAngle) + weight * acctualAngle;
-
+    // record the filtered angle 
     prevAngle = filteredAngle;
 
-     return filteredAngle;
+    return filteredAngle;
  }
  /************************************************************************************
   * Function: pidCompute
   *[
   * Description: computes the PID values for the control loop
   *
-  * Arguments: currAngle - current robot's angle
+  * Arguments: currAngle  -   current robot's angle
+  *            pidGain    -   a pointer to a data structure containing PID gains
   *
   * Return: pidResult - a combine result of P, I, and D components
   *
-  * Author: Iakov Umrikhin
+  * Author: Iakov (aka Iasha) Umrikhin
   * Date: 22.04.2022 (dd.mm.yyyy)
-  * Modified: 22.04.2022 (dd.mm.yyyy)
+  * Modified: 17.05.2022 (dd.mm.yyyy)
   ************************************************************************************/
 
-signed int pidCompute(signed int currAngle) {
+signed int pidCompute(signed int currAngle, PID *pidGain) {
 
-    volatile signed int setAngle = 0;
-    volatile static signed int prevAngle = 0;
-
-    volatile float error;
-    volatile static float prevError = 0;
-    volatile float dT = 0.1;    // time to integrate over is 1 ms
+    volatile static signed int setAngle = 0;
+    volatile signed int error;
+    volatile static signed int prevError = 0;
+    volatile static signed int aforePrevError = 0;
+    volatile float dT = 0.05;    // time to integrate over is 50 ms
+    volatile static unsigned char oneShot = 1;
+    volatile unsigned char pidBuff[20];
 
     // PID components
-    volatile static float iComp = 0;
-    volatile float dComp;
+    volatile signed int pComp;
+    volatile signed int iComp = 0;
+    volatile signed int dComp;
 
     volatile signed int pidResult;
+    volatile static signed int pidResultOld = 0;
 
-    // PID gains
-    volatile float Kp = 60;
-    volatile float Ki = 15;
-    volatile float Kd = 0.7; 
+    if (oneShot){
+
+        pidGain->Kp = 30;
+        pidGain->Ki = 0;
+        pidGain->Kd = 3.5;
+
+        oneShot = 0;
+    }
+
+    // if one of the keys is pressed modify PID gains
+    if (pidChange){
+        changePID(pidGain);
+        pidChange = 0;
+    }
 
     // calculate the error
     error = setAngle - currAngle;
 
     // compute gains
+    // proportional gain
+    pComp = (error - prevError);
 
     // integral gain
-    iComp += error;
-    iComp = constrain(iComp, -50, 50);
+    iComp = (error + prevError) >> 1;
+    iComp = constrain(iComp, -300, 300);
 
-    // derivative gain; save the current angle value
-    dComp = (error - prevError);
+    // derivative gain
+    dComp = (error - 2 * prevError + aforePrevError) / dT;
+    dComp = constrainf(dComp, -300, 300);
+
+    // compute the PID output result
+    pidResult = pidResultOld + (pidGain->Kp * pComp + pidGain->Ki * iComp * dT + pidGain->Kd * dComp) / 10;
+
+    aforePrevError = prevError;
     prevError = error;
+    pidResultOld = pidResult;
 
-    // compute the PID output result; scale for the maximum error = 90 deg
-    pidResult = (Kp * error + Ki * iComp + Kd * dComp);
+    // shut the motors down after 45 degrees; reset static variables
+    // angle is amplified by 10
+    if (abs(currAngle) > 450) {
 
-    if (abs(currAngle) > 45) {
         pidResult = 0;
+
     }
     else {
-        pidResult = constrain(pidResult, -350, 350);
+        pidResult = constrain(pidResult, -500, 500);
+        pidResultOld = constrain(pidResultOld, -500, 500);
     }
 
     return pidResult;
  }
 
 /***************************************************************************************
+ * Name: changePID
+ * 
+ * Description: this function is responsible for changing the PID gains on the fly.
+ *              UP arrow increments the desired gain; DOWN arrow decrements.
+ *              NUM_1   ->  Kp gain <- incremented by 1
+ *              NUM_2   ->  Ki gain <- incremented by 1
+ *              NUM_3   ->  Kd gain <- incremented by 5; amplified by 100 to tune 
+ *                                     values up to 100th digit
+ *              
+ * Arguments: pid   -   a pointer to a data structure containing PID gains
+ * 
+ * Return: Unfortunately, this function is poor, and cannot return anything
+ *         at this moment.
+ * 
+ * Author: Iakov (aka Iasha) Umrikhin
+ * 
+ * Date Created: 08.05.2022 (dd::mm::yyyy)
+ * Date Modified: 17.05.2022 (dd::mm::yyyy)
+ * 
+ * ************************************************************************************/
+void changePID(PID *pid) {
+
+    volatile char pidBuff[50];
+    volatile signed int kpOld, kiOld, kdOld;
+
+    clearArrowKeys(&arrowKey);
+
+    // scale up to 100th
+    pid->Kd *= 100;
+
+    kpOld = pid->Kp;
+    kiOld = pid->Ki;
+    kdOld = pid->Kd;
+
+
+    // print a new line to separate a current routine from the previous ones
+    newLine();
+    usciA1UartTxString("Choose a gain to tune: 1 - Kp; 2 - Ki; 3 - Kd \r\n");
+    newLine();
+
+    while (UCA1RXBUF != 0x73) {     // this is active until the letter S is not pressed
+
+        // enable interrupt
+        UCA1IE |= UCRXIE;
+
+        switch (arrowKey.bitPID){
+        case 1:     // change Kp gain
+
+            // if the UP key is pressed - increment; if the DOWN key is pressed - decrement
+            // else - don't change the variable's value
+            pid->Kp = arrowKey.up ? (pid->Kp + 1) : arrowKey.down ? (pid->Kp - 1) : pid->Kp;
+            sprintf(pidBuff, "Kp:   %d        \r\n", pid->Kp);
+            usciA1UartTxString(pidBuff);
+
+            // to debounce the keypad button; because it needs to increment only by 1
+            if (abs(kpOld - pid->Kp) >= 1) {
+                clearArrowKeys(&arrowKey);
+                kpOld = pid->Kp;
+            }
+            break;
+        case 2:     // change Ki gain
+            pid->Ki = arrowKey.up ? (pid->Ki + 1) : arrowKey.down ? (pid->Ki - 1) : pid->Ki;
+
+            sprintf(pidBuff, "Ki:  %d        \r\n", pid->Ki);
+            usciA1UartTxString(pidBuff);
+
+            if (abs(kiOld - pid->Ki) >= 1) {
+                clearArrowKeys(&arrowKey);
+                kiOld = pid->Ki;
+            }
+            break;
+        case 3:     // change Kd gain
+            pid->Kd = arrowKey.up ? (pid->Kd + 5): arrowKey.down ? (pid->Kd - 5) : pid->Kd;
+            
+            sprintf(pidBuff, "Kd (x0.01):   %.0f        \r\n", pid->Kd);
+            usciA1UartTxString(pidBuff);
+
+            // to debounce the keypad button; because it needs to increment only by 5
+            if (abs(kdOld - pid->Kd) >= 5) {
+                clearArrowKeys(&arrowKey);
+                kdOld = pid->Kd;
+            }
+            break;
+        }
+
+    }
+
+    // scale back
+    pid->Kd /= 100;
+
+    arrowKey.bitPID = 0;
+
+    // print out the result of PID change
+    sprintf(pidBuff, "Kp:   %d   Ki:    %d  Kd:     %f.2  \r\n", pid->Kp, pid->Ki, pid->Kd);
+    usciA1UartTxString(pidBuff);
+    newLine();
+}
+/***************************************************************************************
+ * Name: changePID
+ * 
+ * Description: clears whatever values each arrow-key variable currently has
+ *
+ * 
+ * Arguments: arrowKey - structure containing bools for arrow keys
+ * 
+ * Return: You kid me not! Nothing in return
+ * 
+ * Author: Iakov (aka Iasha) Umrikhin
+ * 
+ * Date Created: 08.05.2022 (dd::mm::yyyy)
+ * Date Modified: 08.05.2022 (dd::mm::yyyy)
+ * 
+ * ************************************************************************************/
+void clearArrowKeys(ARROWS *arrow) {
+    arrow->up = 0;
+    arrow->down = 0;
+}
+
+/***************************************************************************************
+ * Name: detectArrowKey
+ *
+ * Description: detects if one of the arrow keys has been pressed;
+ *              if true, assigns 1 to a variable pertaining to the key
+ *
+ *
+ * Arguments: arrowKey - structure containing variables for each arrow key
+ *
+ * Return: You kid me not! Nothing in return
+ *
+ * Author: Iakov (aka Iasha) Umrikhin
+ *
+ * Date Created: 08.05.2022 (dd::mm::yyyy)
+ * Date Modified: 08.05.2022 (dd::mm::yyyy)
+ *
+ * ************************************************************************************/
+void detectArrowKey(ARROWS *arrow) {
+
+    switch(UCA1RXBUF){
+
+        case 0x41:              // UP key is pressed
+            arrow->up = 1;
+            break;
+        case 0x42:              // DOWN key is pressed
+            arrow->down = 1;
+            break;
+        case 0x31:              // NUM_1 is pressed
+            arrow->bitPID = 1;
+            break;
+        case 0x32:              // NUM_2 is pressed
+            arrow->bitPID = 2;
+            break;
+        case 0x33:              // NUM_3 is pressed
+            arrow->bitPID = 3;
+            break;
+    }
+
+}
+/***************************************************************************************
  * Name: constrain
- * 
- * Descripttion: 
- * 
- * Arguments: 
- * 
- * Return: 
- * 
- * Author: Iakov Umrikhin
- * 
+ *
+ * Description: this function constrains values between lowBoundary and hiBoundary
+ *              for integers.
+ *
+ * Arguments: modifiedVal   -   the float-point value to constrain
+ *            lowBoundary   -   self-explanatory
+ *            highBoundary  -   self-explanatory
+ *
+ * Return: if modifiedVal > highBoudary -> highBoundary; if modifiedVal < lowBoundary;
+ *         otherwise -> modifiedVal. 
+ *
+ * Author: Iakov (aka Iasha) Umrikhin
+ *
  * Date Created: 28.04.2022 (dd::mm::yyyy)
- * Date Modified: 28.04.2022 (dd::mm::yyyy)
- * 
+ * Date Modified: 17.05.2022 (dd::mm::yyyy)
+ *
  * ************************************************************************************/
 
 signed int constrain(signed int modifiedVar, signed int lowBoundary, signed int highBoundary) {
 
-    return (modifiedVar > highBoundary) ? highBoundary : (modifiedVar < lowBoundary) ? lowBoundary : modifiedVar;
+    if (modifiedVar > highBoundary) {
+        modifiedVar = highBoundary;
+    }
+    else if (modifiedVar < lowBoundary) {
+        modifiedVar = lowBoundary;
+    }
+    return modifiedVar;
+
+}
+/***************************************************************************************
+ * Name: constrainf
+ * 
+ * Description: this function constrains values between lowBoundary and highBoundary
+ *              for float-point numbers.
+ * 
+ * Arguments: modifiedVal   -   the float-point value to constrain
+ *            lowBoundary   -   self-explanatory
+ *            highBoundary  -   self-explanatory
+ * 
+ * Return: if modifiedVal > highBoudary -> highBoundary; if modifiedVal < lowBoundary;
+ *         otherwise -> modifiedVal.
+ * 
+ * Author: Iakov (aka Iasha) Umrikhin
+ * 
+ * Date Created: 28.04.2022 (dd::mm::yyyy)
+ * Date Modified: 17.05.2022 (dd::mm::yyyy)
+ * 
+ * ************************************************************************************/
+
+float constrainf(float modifiedVar, signed int lowBoundary, signed int highBoundary) {
+
+    if (modifiedVar > highBoundary) {
+        modifiedVar = highBoundary;
+    }
+    else if (modifiedVar < lowBoundary) {
+        modifiedVar = lowBoundary;
+    }
+    return modifiedVar;
 
 }
 
 /***************************************************************************************
  * Name: mapGyro()
  * 
- * Descripttion: 
+ * Description: this function convert the gyroscopes data from bits to deg/s
+ *              It is amplified by 10, to match with the accelerometer's angles
+ *              that are also multiplied by 10.
+ *
  * 
- * Arguments: 
+ * Arguments: unmappedVal   -   raw data from the gyroscope; Oy axis
  * 
- * Return: 
+ * Return: amplified by 10 angular speed in deg/s
  * 
- * Author: Iakov Umrikhin
+ * Author: Iakov (aka Iasha) Umrikhin
  * 
  * Date Created: 29.04.2022 (dd::mm::yyyy)
- * Date Modified: 29.04.2022 (dd::mm::yyyy)
+ * Date Modified: 17.05.2022 (dd::mm::yyyy)
  * 
  * ************************************************************************************/
 signed int mapGyro(signed int unmappedVal) {
 
     // gyro goes from +- 26624 => 250 / 32768 ~= 0.0094
+    unmappedVal *=  0.094;      // amplified by 10
 
-    return (unmappedVal * 0.0076);
+    return unmappedVal;
 }
 
 
@@ -633,37 +898,24 @@ signed int mapGyro(signed int unmappedVal) {
  ********************************/
 
 #pragma vector = USCI_A1_VECTOR
- __interrupt void enterConsISR (void) {
+ __interrupt void uartISR (void) {
 
      // disable interrupts
      UCA1IE &= ~UCRXIE;
-     enterConsole = 0x0d;   // new line
+
+     switch(UCA1RXBUF) {
+        case 0x70:              // letter P is pressed
+            pidChange = 1;
+            break;
+
+        case 0x0d:
+            enterConsole = 1;   // ENTER key is pressed
+            break;
+     }
+
+     detectArrowKey(&arrowKey);
+
+     // clear interrupt flags
      UCA1IFG &= ~UCRXIFG;
 
  }
-
-
-/************************************************
- * Pseudo code for the motor's direction control:
- * 1. Set the desired angle; Desired angle: 0 deg ->
- *    error = newPhi - setAngle;s
- *    (SET_ANGLE)
- *
- * 2. Send the desired angle to the PID control
- *
- *    Ki, Kp, Kd;
- *    P = error * Kp;
- *    I += error * Ki;
- *    D = ???
- *
- * 3. Actuate motors
- *
- *
- *
- * 4. Record the actual angle
- * 5. Compute the error
- * 6. Repeat
- *
- *
- *
- ************************************************/
